@@ -9,6 +9,7 @@ const logsRefreshBtn = document.getElementById('logsRefreshBtn');
 const hourlyUsageEl = document.getElementById('hourlyUsage');
 const manageStatusEl = document.getElementById('manageStatus');
 const callbackUrlInput = document.getElementById('callbackUrlInput');
+const customProjectIdInput = document.getElementById('customProjectIdInput');
 const allowRandomProjectIdCheckbox = document.getElementById('allowRandomProjectId');
 const submitCallbackBtn = document.getElementById('submitCallbackBtn');
 const logsEl = document.getElementById('logs');
@@ -260,6 +261,78 @@ function bindAccountActions() {
       }
     });
   });
+
+  document.querySelectorAll('[data-action="toggleQuota"]')?.forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = btn.dataset.index;
+      if (idx === undefined) return;
+
+      const quotaSection = document.getElementById(`quota-${idx}`);
+      const isVisible = quotaSection.style.display !== 'none';
+
+      if (isVisible) {
+        quotaSection.style.display = 'none';
+        btn.textContent = '📊 查看额度';
+      } else {
+        quotaSection.style.display = 'block';
+        btn.textContent = '📊 收起额度';
+        await loadQuota(idx);
+      }
+    });
+  });
+}
+
+async function loadQuota(accountIndex) {
+  const quotaSection = document.getElementById(`quota-${accountIndex}`);
+  if (!quotaSection) return;
+
+  try {
+    const data = await fetchJson(`/admin/tokens/${accountIndex}/quotas`);
+    renderQuota(quotaSection, data.data);
+  } catch (e) {
+    quotaSection.innerHTML = `<div class="quota-error">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderQuota(container, quotaData) {
+  if (!quotaData || !quotaData.models) {
+    container.innerHTML = '<div class="quota-error">暂无额度数据</div>';
+    return;
+  }
+
+  const lastUpdated = quotaData.lastUpdated ?
+    new Date(quotaData.lastUpdated).toLocaleString() : '未知时间';
+
+  let html = `
+    <div class="quota-header">
+      <span class="quota-title">模型额度信息</span>
+      <span class="quota-updated">更新时间: ${lastUpdated}</span>
+    </div>
+    <div class="quota-models">
+  `;
+
+  for (const [modelName, modelInfo] of Object.entries(quotaData.models)) {
+    const remaining = Math.round(modelInfo.remaining * 100);
+    const resetTime = modelInfo.resetTime || '未知时间';
+    const colorClass = remaining > 50 ? 'quota-high' :
+                      remaining > 20 ? 'quota-medium' : 'quota-low';
+
+    html += `
+      <div class="quota-model-item">
+        <div class="quota-model-name">${escapeHtml(modelName)}</div>
+        <div class="quota-progress-bar">
+          <div class="quota-progress-fill ${colorClass}" style="width: ${remaining}%"></div>
+        </div>
+        <div class="quota-model-info">
+          <span class="quota-percentage">${remaining}%</span>
+          <span class="quota-reset-time">重置: ${resetTime}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 async function refreshAccounts() {
@@ -327,7 +400,11 @@ function renderAccountsList() {
               </div>
               <div class="action-row secondary">
                 <button class="mini-btn" data-action="refreshProjectId" data-index="${acc.index}">🔄 刷新项目ID</button>
+                <button class="mini-btn" data-action="toggleQuota" data-index="${acc.index}">📊 查看额度</button>
               </div>
+            </div>
+            <div class="quota-section" id="quota-${acc.index}" style="display: none;">
+              <div class="quota-loading">加载中...</div>
             </div>
           </div>
         </div>
@@ -792,17 +869,27 @@ if (submitCallbackBtn && callbackUrlInput) {
       return;
     }
 
+    const customProjectId = customProjectIdInput ? customProjectIdInput.value.trim() : '';
+
     try {
       submitCallbackBtn.disabled = true;
       setStatus('正在解析回调 URL 并交换 token...', 'info');
       await fetchJson('/auth/oauth/parse-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, replaceIndex, allowRandomProjectId: !!allowRandomProjectIdCheckbox?.checked })
+        body: JSON.stringify({
+          url,
+          replaceIndex,
+          customProjectId,
+          allowRandomProjectId: !!allowRandomProjectIdCheckbox?.checked
+        })
       });
 
       setStatus('授权成功，账号已添加。', 'success');
       callbackUrlInput.value = '';
+      if (customProjectIdInput) {
+        customProjectIdInput.value = '';
+      }
       replaceIndex = null;
       refreshAccounts();
     } catch (e) {

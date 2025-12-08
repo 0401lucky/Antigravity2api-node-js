@@ -26,6 +26,7 @@ import {
   getUsageCountsWithinWindow,
   getUsageSummary
 } from '../utils/log_store.js';
+import quotaManager from '../auth/quota_manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -734,7 +735,7 @@ app.get(['/oauth-callback', '/auth/oauth/callback'], (req, res) => {
 
 // 解析用户粘贴的回调 URL，交换 code 为 token，写入 accounts.json 并刷新 TokenManager
 app.post('/auth/oauth/parse-url', requirePanelAuthApi, async (req, res) => {
-    const { url, replaceIndex, allowRandomProjectId } = req.body || {};
+    const { url, replaceIndex, customProjectId, allowRandomProjectId } = req.body || {};
 
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'url 字段必填且必须为字符串' });
@@ -764,11 +765,17 @@ app.post('/auth/oauth/parse-url', requirePanelAuthApi, async (req, res) => {
 
     try {
       const tokenData = await exchangeCodeForToken(code, redirectUri);
-  
+
       let projectId = null;
       let userEmail = null;
       let projectResolveError = null;
-      if (tokenData?.access_token) {
+
+      // 优先使用用户自定义的项目ID
+      if (customProjectId && typeof customProjectId === 'string' && customProjectId.trim()) {
+        projectId = customProjectId.trim();
+        logger.info(`使用用户自定义项目ID: ${projectId}`);
+      } else if (tokenData?.access_token) {
+        // 自动获取项目ID的逻辑
         try {
           // 获取用户邮箱
           userEmail = await fetchUserEmail(tokenData.access_token);
@@ -804,6 +811,7 @@ app.post('/auth/oauth/parse-url', requirePanelAuthApi, async (req, res) => {
 
       if (!projectId && allowRandomProjectId) {
         projectId = generateProjectId();
+        logger.info(`使用随机生成的项目ID: ${projectId}`);
       }
 
       const account = {
@@ -1130,6 +1138,34 @@ app.get('/admin/logs/:id', requirePanelAuthApi, (req, res) => {
   const detail = getLogDetail(req.params.id);
   if (!detail) return res.status(404).json({ error: '日志不存在或已过期' });
   res.json({ log: detail });
+});
+
+// 额度查询接口
+app.get('/admin/tokens/:index/quotas', requirePanelAuthApi, async (req, res) => {
+  try {
+    const index = Number.parseInt(req.params.index, 10);
+    if (Number.isNaN(index)) {
+      return res.status(400).json({ error: '无效的凭证序号' });
+    }
+
+    const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
+    const target = accounts[index];
+    if (!target) {
+      return res.status(404).json({ error: '凭证不存在' });
+    }
+
+    if (!target.refresh_token) {
+      return res.status(400).json({ error: '凭证缺少refresh_token' });
+    }
+
+    // 使用refreshToken作为缓存键
+    const quotas = await quotaManager.getQuotas(target.refresh_token, target);
+
+    res.json({ success: true, data: quotas });
+  } catch (e) {
+    logger.error('获取额度失败:', e.message);
+    res.status(500).json({ error: e.message || '获取额度失败' });
+  }
 });
 
 // Minimal HTML admin panel for OAuth (served as static file)

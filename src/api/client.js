@@ -49,6 +49,41 @@ function buildAxiosConfig(url, headers, body = null) {
     return axiosConfig;
 }
 
+// ==================== 额度相关函数 ====================
+
+export async function getModelsWithQuotas(token) {
+    const headers = buildHeaders(token);
+
+    try {
+        let data;
+        if (useAxios) {
+            data = (await axios(buildAxiosConfig(config.api.modelsUrl, headers, {}))).data;
+        } else {
+            const response = await requester.antigravity_fetch(config.api.modelsUrl, buildRequesterConfig(headers, {}));
+            if (response.status !== 200) {
+                const errorBody = await response.text();
+                throw { status: response.status, message: errorBody };
+            }
+            data = await response.json();
+        }
+
+        const quotas = {};
+        Object.entries(data.models || {}).forEach(([modelId, modelData]) => {
+            if (modelData.quotaInfo) {
+                quotas[modelId] = {
+                    remaining: modelData.quotaInfo.remainingFraction || modelData.quotaInfo.remaining || 0,
+                    resetTime: modelData.quotaInfo.resetTime || null,
+                    resetTimeRaw: modelData.quotaInfo.resetTime
+                };
+            }
+        });
+
+        return quotas;
+    } catch (error) {
+        await handleApiError(error, token);
+    }
+}
+
 function buildRequesterConfig(headers, body = null) {
     const reqConfig = {
         method: 'POST',
